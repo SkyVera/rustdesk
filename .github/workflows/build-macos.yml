@@ -1,0 +1,55 @@
+name: Build and Notarize MacOS App
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '2.5.0' # Flutter sürümünüzü buraya yazın
+
+    - name: Install dependencies
+      run: flutter pub get
+
+    - name: Build MacOS app
+      run: flutter build macos
+
+    - name: Sign MacOS app
+      run: |
+        mkdir -p certs
+        echo "$SIGNING_CERT" | base64 --decode > certs/DeveloperIDApplication.p12
+        echo "$SIGNING_CERT_PW" | base64 --decode > certs/cert-pw.txt
+        security create-keychain -p build-keychain build.keychain
+        security import certs/DeveloperIDApplication.p12 -k build.keychain -P `cat certs/cert-pw.txt` -A
+        security list-keychains -s build.keychain
+        security default-keychain -s build.keychain
+        security unlock-keychain -p build-keychain build.keychain
+        security set-key-partition-list -S apple-tool:,apple: -s -k build-keychain build.keychain
+        codesign --deep --force --verify --verbose --sign "Developer ID Application: $TEAM_ID" build/macos/Build/Products/Release/RustDesk.app
+
+    - name: Create notarize credentials
+      run: |
+        echo "$AC_USERNAME" > AC_USERNAME.txt
+        echo "$AC_PASSWORD" > AC_PASSWORD.txt
+
+    - name: Notarize MacOS app
+      run: |
+        ditto -c -k --keepParent build/macos/Build/Products/Release/RustDesk.app RustDesk.zip
+        xcrun altool --notarize-app -f RustDesk.zip --primary-bundle-id "com.yourcompany.rustdesk" --username "$(cat AC_USERNAME.txt)" --password "$(cat AC_PASSWORD.txt)"
+      env:
+        AC_USERNAME: ${{ secrets.AC_USERNAME }}
+        AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+
+    - name: Staple the notarization ticket to the app
+      run: |
+        xcrun stapler staple build/macos/Build/Products/Release/RustDesk.app
